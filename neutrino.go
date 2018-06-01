@@ -44,12 +44,9 @@ var (
 	// identify ourselves to other bitcoin peers.
 	UserAgentVersion = "0.0.1-alpha"
 
-	// Services describes the services that are supported by the server.
-	Services = wire.SFNodeWitness | wire.SFNodeCF
-
 	// RequiredServices describes the services that are required to be
 	// supported by outbound peers.
-	RequiredServices = wire.SFNodeNetwork | wire.SFNodeWitness | wire.SFNodeCF
+	RequiredServices = wire.SFNodeNetwork
 
 	// BanThreshold is the maximum ban score before a peer is banned.
 	BanThreshold = uint32(100)
@@ -254,19 +251,6 @@ func (sp *ServerPeer) OnVersion(_ *peer.Peer, msg *wire.MsgVersion) {
 	// Add the remote peer time as a sample for creating an offset against
 	// the local clock to keep the network time in sync.
 	sp.server.timeSource.AddTimeSample(sp.Addr(), msg.Timestamp)
-
-	// Check to see if the peer supports the latest protocol version and
-	// service bits required to service us. If not, then we'll disconnect
-	// so we can find compatible peers.
-	peerServices := sp.Services()
-	if peerServices&wire.SFNodeWitness != wire.SFNodeWitness ||
-		peerServices&wire.SFNodeCF != wire.SFNodeCF {
-
-		log.Infof("Disconnecting peer %v, cannot serve compact "+
-			"filters", sp)
-		sp.Disconnect()
-		return
-	}
 
 	// Signal the block manager this peer is a new sync candidate.
 	sp.server.blockManager.NewPeer(sp)
@@ -596,7 +580,6 @@ type ChainService struct {
 	wg                sync.WaitGroup
 	quit              chan struct{}
 	timeSource        blockchain.MedianTimeSource
-	services          wire.ServiceFlag
 	blockSubscribers  map[*blockSubscription]struct{}
 	mtxSubscribers    sync.RWMutex
 
@@ -663,7 +646,6 @@ func NewChainService(cfg Config) (*ChainService, error) {
 		quit:                make(chan struct{}),
 		peerHeightsUpdate:   make(chan updatePeerHeightsMsg),
 		timeSource:          blockchain.NewMedianTime(),
-		services:            Services,
 		userAgentName:       UserAgentName,
 		userAgentVersion:    UserAgentVersion,
 		blockSubscribers:    make(map[*blockSubscription]struct{}),
@@ -1240,7 +1222,6 @@ func newPeerConfig(sp *ServerPeer) *peer.Config {
 		UserAgentName:    sp.server.userAgentName,
 		UserAgentVersion: sp.server.userAgentVersion,
 		ChainParams:      &sp.server.chainParams,
-		Services:         sp.server.services,
 		ProtocolVersion:  wire.FeeFilterVersion,
 		DisableRelayTx:   true,
 	}
