@@ -237,8 +237,7 @@ func (s *ChainService) queryPeers(
 					// to the channel if we quit before
 					// reading the channel.
 					sentChan := make(chan struct{}, 1)
-					sp.QueueMessageWithEncoding(queryMsg,
-						sentChan, wire.WitnessEncoding)
+					sp.QueueMessage(queryMsg, sentChan)
 					select {
 					case <-sentChan:
 					case <-quit:
@@ -467,8 +466,7 @@ func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
 
 	// Construct the appropriate getdata message to fetch the target block.
 	getData := wire.NewMsgGetData()
-	getData.AddInvVect(wire.NewInvVect(wire.InvTypeWitnessBlock,
-		&blockHash))
+	getData.AddInvVect(wire.NewInvVect(wire.InvTypeBlock, &blockHash))
 
 	// The block is only updated from the checkResponse function argument,
 	// which is always called single-threadedly. We don't check the block
