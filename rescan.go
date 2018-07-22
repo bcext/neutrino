@@ -566,9 +566,8 @@ func (s *ChainService) blockFilterMatches(ro *rescanOptions,
 	// We don't need the extended filter, since all of the things a rescan
 	// can watch for are currently added to the same watch list and
 	// available in the basic filter. In the future, we can watch for
-	// data pushes in input scripts (incl. P2SH and witness). In the
-	// meantime, we return false if the basic filter didn't match our
-	// watch list.
+	// data pushes in input scripts (incl. P2SH). In the meantime, we
+	// return false if the basic filter didn't match our watch list.
 	return false, nil
 }
 

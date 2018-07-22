@@ -182,7 +182,7 @@ var (
 )
 
 // secSource is an implementation of btcwallet/txauthor/SecretsSource that
-// stores WitnessPubKeyHash addresses.
+// stores AddressPubKeyHash addresses.
 type secSource struct {
 	keys    map[string]*btcec.PrivateKey
 	scripts map[string]*[]byte

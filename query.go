@@ -817,9 +817,6 @@ func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
 					return
 				}
 
-				// TODO(roasbeef): modify CheckBlockSanity to
-				// also check witness commitment
-
 				// At this point, the block matches what we
 				// know about it and we declare it sane. We can
 				// kill the query and pass the response back to
