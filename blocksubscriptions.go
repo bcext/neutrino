@@ -3,7 +3,7 @@
 
 package neutrino
 
-import "github.com/btcsuite/btcd/wire"
+import "github.com/bcext/gcash/wire"
 
 // messageType describes the type of blockMessage.
 type messageType int

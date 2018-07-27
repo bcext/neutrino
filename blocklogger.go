@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
+	"github.com/bcext/gcash/wire"
 	"github.com/btcsuite/btclog"
 )
 

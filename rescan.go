@@ -9,15 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/gcs/builder"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/neutrino/headerfs"
+	"github.com/bcext/gcash/btcjson"
+	"github.com/bcext/gcash/chaincfg/chainhash"
+	"github.com/bcext/gcash/rpcclient"
+	"github.com/bcext/gcash/txscript"
+	"github.com/bcext/gcash/wire"
+	"github.com/bcext/cashutil"
+	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/cashwallet/waddrmgr"
+	"github.com/bcext/neutrino/headerfs"
 )
 
 // rescanOptions holds the set of functional parameters for Rescan.
@@ -33,7 +33,7 @@ type rescanOptions struct {
 
 	endBlock *waddrmgr.BlockStamp
 
-	watchAddrs  []btcutil.Address
+	watchAddrs  []cashutil.Address
 	watchInputs []InputWithScript
 	watchList   [][]byte
 	txIdx       uint32
@@ -105,7 +105,7 @@ func EndBlock(endBlock *waddrmgr.BlockStamp) RescanOption {
 // function adds to the list of addresses being watched rather than replacing
 // the list. Each time a transaction spends to the specified address, the
 // outpoint is added to the WatchOutPoints list.
-func WatchAddrs(watchAddrs ...btcutil.Address) RescanOption {
+func WatchAddrs(watchAddrs ...cashutil.Address) RescanOption {
 	return func(ro *rescanOptions) {
 		ro.watchAddrs = append(ro.watchAddrs, watchAddrs...)
 	}
@@ -453,7 +453,7 @@ func (s *ChainService) notifyBlock(ro *rescanOptions,
 
 	// Find relevant transactions based on watch list. If scanning is false,
 	// we can safely assume this block has no relevant transactions.
-	var relevantTxs []*btcutil.Tx
+	var relevantTxs []*cashutil.Tx
 	if len(ro.watchList) != 0 && scanning {
 		// If we have a non-empty watch list, then we need to
 		// see if it matches the rescan's filters, so we get
@@ -485,7 +485,7 @@ func (s *ChainService) notifyBlock(ro *rescanOptions,
 				Time:   blockHeader.Timestamp.Unix(),
 			}
 
-			relevantTxs = make([]*btcutil.Tx, 0, len(block.Transactions()))
+			relevantTxs = make([]*cashutil.Tx, 0, len(block.Transactions()))
 			for txIdx, tx := range block.Transactions() {
 				txDetails := blockDetails
 				txDetails.Index = txIdx
@@ -650,7 +650,7 @@ func (ro *rescanOptions) updateFilter(update *updateOptions,
 
 // spendsWatchedInput returns whether the transaction matches the filter by
 // spending a watched input.
-func (ro *rescanOptions) spendsWatchedInput(tx *btcutil.Tx) bool {
+func (ro *rescanOptions) spendsWatchedInput(tx *cashutil.Tx) bool {
 	for _, in := range tx.MsgTx().TxIn {
 		for _, input := range ro.watchInputs {
 			if in.PreviousOutPoint == input.OutPoint {
@@ -664,7 +664,7 @@ func (ro *rescanOptions) spendsWatchedInput(tx *btcutil.Tx) bool {
 // paysWatchedAddr returns whether the transaction matches the filter by having
 // an output paying to a watched address. If that is the case, this also
 // updates the filter to watch the newly created output going forward.
-func (ro *rescanOptions) paysWatchedAddr(tx *btcutil.Tx) (bool, error) {
+func (ro *rescanOptions) paysWatchedAddr(tx *cashutil.Tx) (bool, error) {
 	anyMatchingOutputs := false
 
 txOutLoop:
@@ -772,7 +772,7 @@ func (r *Rescan) Start() <-chan error {
 
 // updateOptions are a set of functional parameters for Update.
 type updateOptions struct {
-	addrs                    []btcutil.Address
+	addrs                    []cashutil.Address
 	inputs                   []InputWithScript
 	txIDs                    []chainhash.Hash
 	rewind                   uint32
@@ -787,7 +787,7 @@ func defaultUpdateOptions() *updateOptions {
 }
 
 // AddAddrs adds addresses to the filter.
-func AddAddrs(addrs ...btcutil.Address) UpdateOption {
+func AddAddrs(addrs ...cashutil.Address) UpdateOption {
 	return func(uo *updateOptions) {
 		uo.addrs = append(uo.addrs, addrs...)
 	}

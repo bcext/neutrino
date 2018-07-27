@@ -8,13 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/gcs"
-	"github.com/btcsuite/btcutil/gcs/builder"
-	"github.com/lightninglabs/neutrino/filterdb"
+	"github.com/bcext/gcash/blockchain"
+	"github.com/bcext/gcash/chaincfg/chainhash"
+	"github.com/bcext/gcash/wire"
+	"github.com/bcext/cashutil"
+	"github.com/bcext/cashutil/gcs"
+	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/neutrino/filterdb"
 )
 
 var (
@@ -741,7 +741,7 @@ func (s *ChainService) GetCFilter(blockHash chainhash.Hash,
 // GetBlockFromNetwork gets a block by requesting it from the network, one peer
 // at a time, until one answers.
 func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
-	options ...QueryOption) (*btcutil.Block, error) {
+	options ...QueryOption) (*cashutil.Block, error) {
 
 	// Starting with the set of default options, we'll apply any specified
 	// functional options to the query so that we can check what inv type
@@ -766,7 +766,7 @@ func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
 	// which is always called single-threadedly. We don't check the block
 	// until after the query is finished, so we can just write to it
 	// naively.
-	var foundBlock *btcutil.Block
+	var foundBlock *cashutil.Block
 	s.queryPeers(
 		// Send a wire.GetDataMsg
 		getData,
@@ -789,11 +789,11 @@ func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
 				if response.BlockHash() != blockHash {
 					return
 				}
-				block := btcutil.NewBlock(response)
+				block := cashutil.NewBlock(response)
 
 				// Only set height if btcutil hasn't
 				// automagically put one in.
-				if block.Height() == btcutil.BlockHeightUnknown {
+				if block.Height() == cashutil.BlockHeightUnknown {
 					block.SetHeight(int32(height))
 				}
 
