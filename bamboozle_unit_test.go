@@ -6,12 +6,12 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/bcext/gcash/chaincfg"
-	"github.com/bcext/gcash/chaincfg/chainhash"
-	"github.com/bcext/gcash/wire"
 	"github.com/bcext/cashutil/gcs"
 	"github.com/bcext/cashutil/gcs/builder"
 	"github.com/bcext/cashwallet/walletdb"
+	"github.com/bcext/gcash/chaincfg"
+	"github.com/bcext/gcash/chaincfg/chainhash"
+	"github.com/bcext/gcash/wire"
 	"github.com/bcext/neutrino/headerfs"
 )
 

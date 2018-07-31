@@ -8,12 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bcext/gcash/blockchain"
-	"github.com/bcext/gcash/chaincfg/chainhash"
-	"github.com/bcext/gcash/wire"
 	"github.com/bcext/cashutil"
 	"github.com/bcext/cashutil/gcs"
 	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/gcash/blockchain"
+	"github.com/bcext/gcash/chaincfg/chainhash"
+	"github.com/bcext/gcash/wire"
 	"github.com/bcext/neutrino/filterdb"
 )
 
@@ -791,7 +791,7 @@ func (s *ChainService) GetBlockFromNetwork(blockHash chainhash.Hash,
 				}
 				block := cashutil.NewBlock(response)
 
-				// Only set height if btcutil hasn't
+				// Only set height if cashutil hasn't
 				// automagically put one in.
 				if block.Height() == cashutil.BlockHeightUnknown {
 					block.SetHeight(int32(height))

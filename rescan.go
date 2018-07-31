@@ -9,14 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bcext/cashutil"
+	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/cashwallet/waddrmgr"
 	"github.com/bcext/gcash/btcjson"
 	"github.com/bcext/gcash/chaincfg/chainhash"
 	"github.com/bcext/gcash/rpcclient"
 	"github.com/bcext/gcash/txscript"
 	"github.com/bcext/gcash/wire"
-	"github.com/bcext/cashutil"
-	"github.com/bcext/cashutil/gcs/builder"
-	"github.com/bcext/cashwallet/waddrmgr"
 	"github.com/bcext/neutrino/headerfs"
 )
 
@@ -712,7 +712,7 @@ txOutLoop:
 
 // Rescan is an object that represents a long-running rescan/notification
 // client with updateable filters. It's meant to be close to a drop-in
-// replacement for the btcd rescan and notification functionality used in
+// replacement for the gcash rescan and notification functionality used in
 // wallets. It only contains information about whether a goroutine is running.
 type Rescan struct {
 	running    uint32

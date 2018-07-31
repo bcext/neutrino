@@ -3,11 +3,11 @@ package filterdb
 import (
 	"fmt"
 
-	"github.com/bcext/gcash/chaincfg"
-	"github.com/bcext/gcash/chaincfg/chainhash"
 	"github.com/bcext/cashutil/gcs"
 	"github.com/bcext/cashutil/gcs/builder"
 	"github.com/bcext/cashwallet/walletdb"
+	"github.com/bcext/gcash/chaincfg"
+	"github.com/bcext/gcash/chaincfg/chainhash"
 )
 
 var (

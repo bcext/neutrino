@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bcext/cashwallet/walletdb"
 	"github.com/bcext/gcash/chaincfg"
 	"github.com/bcext/gcash/chaincfg/chainhash"
 	"github.com/bcext/gcash/wire"
-	"github.com/bcext/cashwallet/walletdb"
 	"github.com/davecgh/go-spew/spew"
 )
 

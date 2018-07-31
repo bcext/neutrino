@@ -14,6 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bcext/cashutil"
+	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/cashwallet/waddrmgr"
+	"github.com/bcext/cashwallet/wallet/txauthor"
+	"github.com/bcext/cashwallet/walletdb"
 	"github.com/bcext/gcash/btcec"
 	"github.com/bcext/gcash/btcjson"
 	"github.com/bcext/gcash/chaincfg"
@@ -22,14 +27,10 @@ import (
 	"github.com/bcext/gcash/rpcclient"
 	"github.com/bcext/gcash/txscript"
 	"github.com/bcext/gcash/wire"
-	"github.com/btcsuite/btclog"
-	"github.com/bcext/cashutil"
-	"github.com/bcext/cashutil/gcs/builder"
-	"github.com/bcext/cashwallet/waddrmgr"
-	"github.com/bcext/cashwallet/wallet/txauthor"
-	"github.com/bcext/cashwallet/walletdb"
-	_ "github.com/bcext/cashwallet/walletdb/bdb"
 	"github.com/bcext/neutrino"
+	"github.com/btcsuite/btclog"
+
+	_ "github.com/bcext/cashwallet/walletdb/bdb"
 )
 
 var (
@@ -181,7 +182,7 @@ var (
 	ourKnownTxsByFilteredBlock = make(map[chainhash.Hash][]*cashutil.Tx)
 )
 
-// secSource is an implementation of btcwallet/txauthor/SecretsSource that
+// secSource is an implementation of cashwallet/txauthor/SecretsSource that
 // stores AddressPubKeyHash addresses.
 type secSource struct {
 	keys    map[string]*btcec.PrivateKey
@@ -974,7 +975,7 @@ func TestNeutrinoSync(t *testing.T) {
 	rpcLogger.SetLevel(logLevel)
 	rpcclient.UseLogger(rpcLogger)
 
-	// Create a btcd SimNet node and generate 800 blocks
+	// Create a gcash SimNet node and generate 800 blocks
 	h1, err := rpctest.New(&chaincfg.SimNetParams, nil, nil)
 	if err != nil {
 		t.Fatalf("Couldn't create harness: %s", err)
@@ -989,7 +990,7 @@ func TestNeutrinoSync(t *testing.T) {
 		t.Fatalf("Couldn't generate blocks: %s", err)
 	}
 
-	// Create a second btcd SimNet node
+	// Create a second gcash SimNet node
 	h2, err := rpctest.New(&chaincfg.SimNetParams, nil, nil)
 	if err != nil {
 		t.Fatalf("Couldn't create harness: %s", err)
@@ -1000,7 +1001,7 @@ func TestNeutrinoSync(t *testing.T) {
 		t.Fatalf("Couldn't set up harness: %s", err)
 	}
 
-	// Create a third btcd SimNet node and generate 1200 blocks
+	// Create a third gcash SimNet node and generate 1200 blocks
 	h3, err := rpctest.New(&chaincfg.SimNetParams, nil, nil)
 	if err != nil {
 		t.Fatalf("Couldn't create harness: %s", err)

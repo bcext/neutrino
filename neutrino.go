@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bcext/cashutil"
+	"github.com/bcext/cashwallet/waddrmgr"
+	"github.com/bcext/cashwallet/walletdb"
 	"github.com/bcext/gcash/addrmgr"
 	"github.com/bcext/gcash/blockchain"
 	"github.com/bcext/gcash/chaincfg"
@@ -19,9 +22,6 @@ import (
 	"github.com/bcext/gcash/connmgr"
 	"github.com/bcext/gcash/peer"
 	"github.com/bcext/gcash/wire"
-	"github.com/bcext/cashutil"
-	"github.com/bcext/cashwallet/waddrmgr"
-	"github.com/bcext/cashwallet/walletdb"
 	"github.com/bcext/neutrino/filterdb"
 	"github.com/bcext/neutrino/headerfs"
 )

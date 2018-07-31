@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/bcext/cashutil/gcs/builder"
+	"github.com/bcext/cashwallet/waddrmgr"
+	"github.com/bcext/cashwallet/walletdb"
 	"github.com/bcext/gcash/blockchain"
 	"github.com/bcext/gcash/chaincfg"
 	"github.com/bcext/gcash/chaincfg/chainhash"
 	"github.com/bcext/gcash/wire"
-	"github.com/bcext/cashutil/gcs/builder"
-	"github.com/bcext/cashwallet/waddrmgr"
-	"github.com/bcext/cashwallet/walletdb"
 )
 
 // headerBufPool is a pool of bytes.Buffer that will be re-used by the various
