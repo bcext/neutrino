@@ -1,31 +1,55 @@
-package: github.com/bcext/neutrino
+package: github.com/lightninglabs/neutrino
 import:
-- package: github.com/bcext/cashutil
-  version: 607fe08061c98889af9599009e62774092d2cf06
-  subpackages:
-  - gcs
-  - gcs/builder
-- package: github.com/bcext/cashwallet
-  version: cee3ce44e5b1cdf488d9e74c23f864e1716d7349
-  subpackages:
-  - waddrmgr
-  - walletdb
+- package: github.com/coreos/bbolt
+  version: 4f5275f4ebbf6fe7cb772de987fa96ee674460a7
 - package: github.com/bcext/gcash
-  version: 067de8b6c8108fb5df47ccbea453b0c6e727d5ba
+  version: 11ef133b910432771ccc67736e1bde9e377113b9
   subpackages:
-  - addrmgr
   - blockchain
+  - btcec
   - btcjson
   - chaincfg
   - chaincfg/chainhash
-  - connmgr
-  - peer
-  - rpcclient
   - txscript
   - wire
 - package: github.com/btcsuite/btclog
+- package: github.com/bcext/cashutil
+  version: a5c8dc7dcbbac5d05b569fa4016441ab4d2314bd
+  subpackages:
+  - base58
+  - gcs
+  - gcs/builder
+  - hdkeychain
+- package: github.com/bcext/cashwallet
+  version: a7cfc6a2dbcf8565e314d30527787dd92f9dcd8d
+  subpackages:
+  - waddrmgr
+  - wallet/txauthor
+  - walletdb
+  - walletdb/bdb
+- package: github.com/btcsuite/golangcrypto
+  subpackages:
+  - nacl/secretbox
+  - ripemd160
+  - scrypt
+  - ssh/terminal
+- package: github.com/btcsuite/seelog
+- package: github.com/btcsuite/websocket
+- package: github.com/golang/protobuf
+  subpackages:
+  - proto
+- package: github.com/jessevdk/go-flags
+  version: 1679536dcc895411a9f5848d9a0250be7856448c
+- package: golang.org/x/net
+  subpackages:
+  - context
+- package: google.golang.org/grpc
+  version: 1.0.3
+  subpackages:
+  - codes
+  - credentials
+  - grpclog
 testImport:
 - package: github.com/davecgh/go-spew
-  version: ^1.1.0
   subpackages:
   - spew
