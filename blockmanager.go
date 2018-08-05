@@ -3,6 +3,7 @@
 package neutrino
 
 import (
+	"bytes"
 	"container/list"
 	"fmt"
 	"math/big"
@@ -75,13 +76,6 @@ type txMsg struct {
 	peer *ServerPeer
 }
 
-// isCurrentMsg is a message type to be sent across the message channel for
-// requesting whether or not the block manager believes it is synced with
-// the currently connected peers.
-type isCurrentMsg struct {
-	reply chan bool
-}
-
 // headerNode is used as a node in a list of headers that are linked together
 // between checkpoints.
 type headerNode struct {
@@ -92,13 +86,61 @@ type headerNode struct {
 // blockManager provides a concurrency safe block manager for handling all
 // incoming blocks.
 type blockManager struct {
-	server          *ChainService
-	started         int32
-	shutdown        int32
-	requestedBlocks map[chainhash.Hash]struct{}
-	progressLogger  *blockProgressLogger
-	syncPeer        *ServerPeer
-	syncPeerMutex   sync.Mutex
+	started  int32
+	shutdown int32
+
+	// blkHeaderProgressLogger is a progress logger that we'll use to
+	// update the number of blocker headers we've processed in the past 10
+	// seconds within the log.
+	blkHeaderProgressLogger *headerProgressLogger
+
+	// fltrHeaderProgessLogger is a process logger similar to the one
+	// above, but we'll use it to update the progress of the set of filter
+	// headers that we've verified in the past 10 seconds.
+	fltrHeaderProgessLogger *headerProgressLogger
+
+	// headerTip will be set to the current block header tip at all times.
+	// Callers MUST hold the block below each time they read/write from
+	// this field.
+	headerTip uint32
+
+	// newHeadersMtx is the mutex that should be held when reading/writing
+	// the headerTip variable above.
+	newHeadersMtx sync.RWMutex
+
+	// newHeadersSignal is condition variable which will be used to notify
+	// any waiting callers (via Broadcast()) that the tip of the current
+	// chain has changed. This is useful when callers need to know we have
+	// a new tip, but not necessarily each block that was connected during
+	// switch over.
+	newHeadersSignal *sync.Cond
+
+	// filterHeaderTip will be set to the current filter header tip at all
+	// times.  Callers MUST hold the block below each time they read/write
+	// from this field.
+	filterHeaderTip uint32
+
+	// newFilterHeadersMtx is the mutex that should be held when
+	// reading/writing the filterHeaderTip variable above.
+	newFilterHeadersMtx sync.RWMutex
+
+	// newFilterHeadersSignal is condition variable which will be used to
+	// notify any waiting callers (via Broadcast()) that the tip of the
+	// current filter header chain has changed. This is useful when callers
+	// need to know we have a new tip, but not necessarily each filter
+	// header that was connected during switch over.
+	newFilterHeadersSignal *sync.Cond
+
+	// syncPeer points to the peer that we're currently syncing block
+	// headers from.
+	syncPeer *ServerPeer
+
+	// syncPeerMutex protects the above syncPeer pointer at all times.
+	syncPeerMutex sync.RWMutex
+
+	// server is a pointer to the main p2p server for Neutrino, we'll use
+	// this pointer at times to do things like access the database, etc
+	server *ChainService
 
 	// peerChan is a channel for messages that come from peers
 	peerChan chan interface{}
@@ -111,8 +153,6 @@ type blockManager struct {
 	startHeader    *list.Element
 	nextCheckpoint *chaincfg.Checkpoint
 	lastRequested  chainhash.Hash
-
-	startCFHeaderSync chan struct{}
 
 	minRetargetTimespan int64 // target timespan / adjustment factor
 	maxRetargetTimespan int64 // target timespan * adjustment factor
@@ -127,18 +167,27 @@ func newBlockManager(s *ChainService) (*blockManager, error) {
 	adjustmentFactor := s.chainParams.RetargetAdjustmentFactor
 
 	bm := blockManager{
-		server:              s,
-		requestedBlocks:     make(map[chainhash.Hash]struct{}),
-		peerChan:            make(chan interface{}, MaxPeers*3),
-		progressLogger:      newBlockProgressLogger("Processed", log),
+		server:   s,
+		peerChan: make(chan interface{}, MaxPeers*3),
+		blkHeaderProgressLogger: newBlockProgressLogger(
+			"Processed", "block", log,
+		),
+		fltrHeaderProgessLogger: newBlockProgressLogger(
+			"Verified", "filter header", log,
+		),
 		headerList:          list.New(),
 		reorgList:           list.New(),
 		quit:                make(chan struct{}),
 		blocksPerRetarget:   int32(targetTimespan / targetTimePerBlock),
 		minRetargetTimespan: targetTimespan / adjustmentFactor,
 		maxRetargetTimespan: targetTimespan * adjustmentFactor,
-		startCFHeaderSync:   make(chan struct{}),
 	}
+
+	// Next we'll create the two signals that goroutines will use to wait
+	// on a particular header chain height before starting their normal
+	// duties.
+	bm.newHeadersSignal = sync.NewCond(&bm.newHeadersMtx)
+	bm.newFilterHeadersSignal = sync.NewCond(&bm.newFilterHeadersMtx)
 
 	// Initialize the next checkpoint based on the current height.
 	header, height, err := s.BlockHeaders.ChainTip()
@@ -147,6 +196,14 @@ func newBlockManager(s *ChainService) (*blockManager, error) {
 	}
 	bm.nextCheckpoint = bm.findNextHeaderCheckpoint(int32(height))
 	bm.resetHeaderState(header, int32(height))
+	bm.headerTip = height
+
+	// Finally, we'll set the filter header tip so any goroutines waiting
+	// on the condition obtain the correct initial state.
+	_, bm.filterHeaderTip, err = s.RegFilterHeaders.ChainTip()
+	if err != nil {
+		return nil, err
+	}
 
 	return &bm, nil
 }
@@ -173,9 +230,30 @@ func (b *blockManager) Stop() error {
 		return nil
 	}
 
+	// We'll send out update signals before the quit to ensure that any
+	// goroutines waiting on them will properly exit.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Millisecond * 50)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+
+			b.newHeadersSignal.Broadcast()
+			b.newFilterHeadersSignal.Broadcast()
+		}
+	}()
+
 	log.Infof("Block manager shutting down")
 	close(b.quit)
 	b.wg.Wait()
+
+	close(done)
 	return nil
 }
 
@@ -185,7 +263,12 @@ func (b *blockManager) NewPeer(sp *ServerPeer) {
 	if atomic.LoadInt32(&b.shutdown) != 0 {
 		return
 	}
-	b.peerChan <- &newPeerMsg{peer: sp}
+
+	select {
+	case b.peerChan <- &newPeerMsg{peer: sp}:
+	case <-b.quit:
+		return
+	}
 }
 
 // handleNewPeerMsg deals with new peers that have signalled they may be
@@ -217,7 +300,7 @@ func (b *blockManager) handleNewPeerMsg(peers *list.List, sp *ServerPeer) {
 			err)
 		return
 	}
-	if b.current() && height < uint32(sp.StartingHeight()) {
+	if b.IsCurrent() && height < uint32(sp.StartingHeight()) {
 		locator, err := b.server.BlockHeaders.LatestBlockLocator()
 		if err != nil {
 			log.Criticalf("Couldn't retrieve latest block "+
@@ -239,7 +322,11 @@ func (b *blockManager) DonePeer(sp *ServerPeer) {
 		return
 	}
 
-	b.peerChan <- &donePeerMsg{peer: sp}
+	select {
+	case b.peerChan <- &donePeerMsg{peer: sp}:
+	case <-b.quit:
+		return
+	}
 }
 
 // handleDonePeerMsg deals with peers that have signalled they are done.  It
@@ -259,7 +346,7 @@ func (b *blockManager) handleDonePeerMsg(peers *list.List, sp *ServerPeer) {
 
 	// Attempt to find a new peer to sync from if the quitting peer is the
 	// sync peer.  Also, reset the header state.
-	if b.syncPeer != nil && b.syncPeer == sp {
+	if b.SyncPeer() != nil && b.SyncPeer() == sp {
 		b.syncPeerMutex.Lock()
 		b.syncPeer = nil
 		b.syncPeerMutex.Unlock()
@@ -286,14 +373,28 @@ func (b *blockManager) cfHandler() {
 	log.Infof("Waiting for block headers to sync, then will start " +
 		"cfheaders sync...")
 
-	// Wait for block header sync to complete first.
-	select {
-	case <-b.startCFHeaderSync:
-	case <-b.quit:
-		return
-	}
+	// We'll wait until the main header sync is mostly finished before we
+	// actually start to sync the set of cfheaders. We do this to speed up
+	// the sync, as the check pointed sync is faster, then fetching each
+	// header from each peer during the normal "at tip" syncing.
+	b.newHeadersSignal.L.Lock()
+	for !b.IsCurrent() {
+		b.newHeadersSignal.Wait()
 
-	// Query all peers for their checkpoints.
+		// While we're awake, we'll quickly check to see if we need to
+		// quit early.
+		select {
+		case <-b.quit:
+			b.newHeadersSignal.L.Unlock()
+			return
+		default:
+
+		}
+	}
+	b.newHeadersSignal.L.Unlock()
+
+	// Now that we know the header sync is mostly finished, we'll grab the
+	// current chain tip so we can base our header sync off of that.
 	lastHeader, lastHeight, err := b.server.BlockHeaders.ChainTip()
 	if err != nil {
 		log.Critical(err)
@@ -301,11 +402,11 @@ func (b *blockManager) cfHandler() {
 	}
 	lastHash := lastHeader.BlockHash()
 
-	log.Infof("Starting cfheaders sync at height=%v, hash=%v", lastHeight,
+	log.Infof("Starting cfheaders sync at block_height=%v, hash=%v", lastHeight,
 		lastHeader.BlockHash())
 
-	// We'll sync the headers and checkpoints for all filter types in pare
-	// ll, by using a goroutine for each filter type.
+	// We'll sync the headers and checkpoints for all filter types in
+	// parallel, by using a goroutine for each filter type.
 	var wg sync.WaitGroup
 	wg.Add(len(filterTypes))
 	for fType, storeLookup := range filterTypes {
@@ -316,7 +417,7 @@ func (b *blockManager) cfHandler() {
 
 			defer wg.Done()
 
-			log.Debugf("Starting cfheaders sync for "+
+			log.Infof("Starting cfheaders sync for "+
 				"filter_type=%v", fType)
 
 			var (
@@ -378,21 +479,38 @@ func (b *blockManager) cfHandler() {
 			log.Infof("Fully caught up with cfheaders, waiting at " +
 				"tip for new blocks")
 
-			// Catch the filter headers up to the tip of the block
-			// header store and then stay caught up with each
-			// signal while watching for reorgs. We ignore
-			// checkpoints because at this point, we're past any
-			// valid checkpoints.
-			//
-			// TODO: We can read startCFHeaderSync and split it out
-			// into a signal for each goroutine instead of using
-			// the ticker. This would make cfheaders stay caught up
-			// constantly rather than catch up every tick in the
-			// event of fast blocks coming in.
-			ticker := time.NewTicker(QueryTimeout)
-			defer ticker.Stop()
+			// Now that we've been fully caught up to the tip of
+			// the current header chain, we'll wait here for a
+			// signal that more blocks have been connected. If this
+			// happens then we'll do another round to fetch the new
+			// set of filter new  set of filter headers
 			for {
-				// Get/write the next set of cfheaders, if any.
+				// We'll wait until the filter header tip and
+				// the header tip are mismatched.
+				//
+				// NOTE: We can grab the filterHeaderTip here
+				// without a lock, as this is the only
+				// goroutine that can modify this value.
+				b.newHeadersSignal.L.Lock()
+				for b.filterHeaderTip == b.headerTip {
+					// We'll wait here until we're woken up
+					// by the broadcast signal.
+					b.newHeadersSignal.Wait()
+
+					// Before we proceed, we'll check if we
+					// need to exit at all
+					select {
+					case <-b.quit:
+						b.newHeadersSignal.L.Unlock()
+						return
+					default:
+					}
+				}
+				b.newHeadersSignal.L.Unlock()
+
+				// At this point, we know that there're a set
+				// of new filter headers to fetch, so we'll
+				// grab them now.
 				if err = b.getUncheckpointedCFHeaders(
 					store, fType,
 				); err != nil {
@@ -405,10 +523,10 @@ func (b *blockManager) cfHandler() {
 				select {
 				case <-b.quit:
 					return
-				case <-ticker.C:
+				default:
 				}
-
 			}
+
 		}(fType, storeLookup)
 	}
 	wg.Wait()
@@ -481,7 +599,7 @@ func (b *blockManager) getUncheckpointedCFHeaders(
 				return err
 			}
 
-			log.Infof("Attempting to reconcile cfheader mismatch "+
+			log.Warnf("Attempting to reconcile cfheader mismatch "+
 				"amongst %v peers", len(headers))
 
 			// We'll also fetch each of the filters from the peers
@@ -540,30 +658,44 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 		panic("getting chaintip from store")
 	}
 
+	initialFilterHeader := curHeader
+
 	log.Infof("Fetching set of checkpointed cfheaders filters from "+
 		"height=%v, hash=%v", curHeight, curHeader)
+
+	// The starting interval is the checkpoint index that we'll be starting
+	// from based on our current height in the filter header index.
+	startingInterval := curHeight / wire.CFCheckptInterval
+
+	log.Infof("Starting to query for cfheaders from "+
+		"checkpoint_interval=%v", startingInterval)
+
+	queryMsgs := make([]wire.Message, 0, len(checkpoints))
+
+	// We'll also create an additional set of maps that we'll use to
+	// re-order the responses as we get them in.
+	queryResponses := make(map[uint32]*wire.MsgCFHeaders)
+	stopHashes := make(map[chainhash.Hash]uint32)
 
 	// Generate all of the requests we'll be batching and space to store
 	// the responses. Also make a map of stophash to index to make it
 	// easier to match against incoming responses.
-	queryMsgs := make([]wire.Message, len(checkpoints))
-	queryResponses := make([]*wire.MsgCFHeaders, len(checkpoints))
-	stopHashes := make(map[chainhash.Hash]int)
-	for i := 0; i < len(checkpoints); i++ {
+	//
+	// TODO(roasbeef): extract to func to test
+	currentInterval := startingInterval
+	for currentInterval < uint32(len(checkpoints)) {
 		// Each checkpoint is spaced wire.CFCheckptInterval after the
 		// prior one, so we'll fetch headers in batches using the
 		// checkpoints as a guide.
-		startHeightRange := uint32(i * wire.CFCheckptInterval)
-		if i == 0 {
-			startHeightRange++
-		}
-		endHeightRange := uint32((i+1)*wire.CFCheckptInterval - 1)
+		startHeightRange := uint32(
+			currentInterval*wire.CFCheckptInterval,
+		) + 1
+		endHeightRange := uint32(
+			(currentInterval + 1) * wire.CFCheckptInterval,
+		)
 
-		// If we have the header for this checkpoint, we can skip doing
-		// anything with it.
-		if endHeightRange <= curHeight {
-			continue
-		}
+		log.Tracef("Checkpointed cfheaders request start_range=%v, "+
+			"end_range=%v", startHeightRange, endHeightRange)
 
 		// In order to fetch the range, we'll need the block header for
 		// the end of the height range.
@@ -576,7 +708,7 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 			case <-b.quit:
 				return
 			default:
-				i--
+				currentInterval--
 				time.Sleep(QueryTimeout)
 				continue
 			}
@@ -591,22 +723,22 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 
 		// We'll mark that the ith interval is queried by this message,
 		// and also map the top hash back to the index of this message.
-		queryMsgs[i] = queryMsg
-		stopHashes[stopHash] = i
+		queryMsgs = append(queryMsgs, queryMsg)
+		stopHashes[stopHash] = currentInterval
+
+		// With the queries for this interval constructed, we'll move
+		// onto the next one.
+		currentInterval++
 	}
 
-	// Query for all headers, skipping any checkpoint intervals we
-	// have all of. Record them as necessary.
-	headersToQuery := queryMsgs[curHeight/wire.CFCheckptInterval:]
-
-	log.Infof("Attempting to query for %v cfheader batches", len(headersToQuery))
+	log.Infof("Attempting to query for %v cfheader batches", len(queryMsgs))
 
 	// With the set of messages constructed, we'll now request the batch
 	// all at once. This message will distributed the header requests
 	// amongst all active peers, effectively sharding each query
 	// dynamically.
 	b.server.queryBatch(
-		headersToQuery,
+		queryMsgs,
 
 		// Callback to process potential replies. Always called from
 		// the same goroutine as the outer function, so we don't have
@@ -640,7 +772,9 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 			}
 
 			// The response doesn't match the checkpoint.
-			if verifyCheckpoint(checkpoints[checkPointIndex], r) {
+			if !verifyCheckpoint(checkpoints[checkPointIndex], r) {
+				log.Warnf("Checkpoints at index %v don't match " +
+					"response!!!")
 				return false
 			}
 
@@ -655,16 +789,16 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 
 			// Find the first and last height for the blocks
 			// represented by this message.
-			startHeight := checkPointIndex * wire.CFCheckptInterval
-			lastHeight := startHeight + wire.CFCheckptInterval - 1
-			if checkPointIndex == 0 {
-				startHeight++
-			}
+			startHeight := checkPointIndex*wire.CFCheckptInterval + 1
+			lastHeight := startHeight + wire.CFCheckptInterval
+
+			log.Debugf("Got cfheaders from height=%v to height=%v",
+				startHeight, lastHeight)
 
 			// If this is out of order but not yet written, we can
 			// verify that the checkpoints match, and then store
 			// them.
-			if startHeight > int(curHeight)+1 {
+			if startHeight > curHeight+1 {
 				log.Debugf("Got response for headers at "+
 					"height=%v, only at height=%v, stashing",
 					startHeight, curHeight)
@@ -676,22 +810,30 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 
 			// If this is out of order stuff that's already been
 			// written, we can ignore it.
-			if lastHeight <= int(curHeight) {
+			if lastHeight <= curHeight {
+				log.Debugf("Received out of order reply "+
+					"end_height=%v, already written", lastHeight)
 				return true
 			}
 
-			// For the first message in the range, we may already
-			// have a portion of the headers written to disk. So
-			// we'll set the prev header to our best known header,
-			// and seek within the header range a bit.
-			r.PrevFilterHeader = *curHeader
-			offset := startHeight - int(curHeight) - 1
-			if len(r.FilterHashes) < offset {
-				return true
+			// If this is the very first range we've requested, we
+			// may already have a portion of the headers written to
+			// disk.
+			//
+			// TODO(roasbeef): can eventually special case handle
+			// this at the top
+			if bytes.Equal(curHeader[:], initialFilterHeader[:]) {
+				// So we'll set the prev header to our best
+				// known header, and seek within the header
+				// range a bit so we don't write any duplicate
+				// headers.
+				r.PrevFilterHeader = *curHeader
+				offset := startHeight - curHeight - 1
+				r.FilterHashes = r.FilterHashes[offset:]
 			}
 
-			r.FilterHashes = r.FilterHashes[offset:]
-			if _, err := b.writeCFHeadersMsg(r, store); err != nil {
+			curHeader, err = b.writeCFHeadersMsg(r, store)
+			if err != nil {
 				panic(fmt.Sprintf("couldn't write cfheaders "+
 					"msg: %v", err))
 			}
@@ -703,11 +845,11 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 
 				// We'll also update the current height of the
 				// last written set of cfheaders.
-				curHeight = uint32(checkPointIndex * wire.CFCheckptInterval)
+				curHeight = checkPointIndex * wire.CFCheckptInterval
 
 				// Break if we've gotten to the end of the
 				// responses or we don't have the next one.
-				if checkPointIndex >= len(queryResponses) {
+				if checkPointIndex >= uint32(len(queryResponses)) {
 					break
 				}
 
@@ -722,6 +864,9 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 				// We have another response to write, so delete
 				// it from the cache and write it.
 				queryResponses[checkPointIndex] = nil
+
+				log.Debugf("Writing cfheaders at height=%v to "+
+					"next checkpoint", curHeight)
 
 				// As we write the set of headers to disk, we
 				// also obtain the hash of the last filter
@@ -750,6 +895,9 @@ func (b *blockManager) getCheckpointedCFHeaders(checkpoints []*chainhash.Hash,
 // filter header field in the next message range before writing to disk.
 func (b *blockManager) writeCFHeadersMsg(msg *wire.MsgCFHeaders,
 	store *headerfs.FilterHeaderStore) (*chainhash.Hash, error) {
+
+	b.newFilterHeadersMtx.Lock()
+	defer b.newFilterHeadersMtx.Unlock()
 
 	// Check that the PrevFilterHeader is the same as the last stored so we
 	// can prevent misalignment.
@@ -788,6 +936,8 @@ func (b *blockManager) writeCFHeadersMsg(msg *wire.MsgCFHeaders,
 		return nil, err
 	}
 
+	lastHeight := height
+
 	// We'll walk through the set of headers we need to write backwards, so
 	// we can properly populate the target header hash as well as the
 	// height. Both are these are needed for the internal indexes.
@@ -802,15 +952,18 @@ func (b *blockManager) writeCFHeadersMsg(msg *wire.MsgCFHeaders,
 		// we can send a notification to all our subscribers below.
 		processedHeaders[numHeaders-i-1] = curHeader
 
+		// TODO(roasbeef): modify s.t only a single read to populate
+		// set
 		curHeader, height, err = b.server.BlockHeaders.FetchHeader(
 			&curHeader.PrevBlock,
 		)
 		if err != nil {
 			return nil, err
 		}
+
 	}
 
-	log.Debugf("Writing filter headers up to height=%v", height)
+	log.Debugf("Writing filter headers up to height=%v", lastHeight)
 
 	// Write the header batch.
 	err = store.WriteHeaders(headerBatch...)
@@ -818,14 +971,27 @@ func (b *blockManager) writeCFHeadersMsg(msg *wire.MsgCFHeaders,
 		return nil, err
 	}
 
-	// Notify subscribers.
+	// Notify subscribers, and also update the filter header progress
+	// logger at the same time.
 	msgType := connectBasic
-	for _, header := range processedHeaders {
+	for i, header := range processedHeaders {
+		headerHeight := height - uint32(numHeaders) + uint32(i)
+		b.fltrHeaderProgessLogger.LogBlockHeight(
+			header.Timestamp, int32(headerHeight),
+		)
+
 		b.server.sendSubscribedMsg(&blockMessage{
 			msgType: msgType,
 			header:  header,
 		})
 	}
+
+	// We'll also set the new header tip and notify any peers that the tip
+	// has changed as well. Unlike the set of notifications above, this is
+	// for sub-system that only need to know the height has changed rather
+	// than know each new header that's been added to the tip.
+	b.filterHeaderTip = lastHeight
+	b.newFilterHeadersSignal.Broadcast()
 
 	return &lastHeader, nil
 }
@@ -866,7 +1032,7 @@ func (b *blockManager) resolveConflict(
 		}
 	}
 
-	log.Warnf("Detected mismatch at index=%v for checkpoints!!!")
+	log.Warnf("Detected mismatch at index=%v for checkpoints!!!", heightDiff)
 
 	// Delete any responses that have fewer checkpoints than where we see a
 	// mismatch.
@@ -1232,6 +1398,7 @@ func checkCFCheckptSanity(cp map[string][]*chainhash.Hash,
 	// Get the known best header to compare against checkpoints.
 	_, storeTip, err := headerStore.ChainTip()
 	if err != nil {
+		fmt.Println("unable to get chain tip")
 		return 0, err
 	}
 
@@ -1257,10 +1424,14 @@ func checkCFCheckptSanity(cp map[string][]*chainhash.Hash,
 				checkpoint = *checkpoints[i]
 			}
 			if checkpoint != *checkpoints[i] {
+				log.Warnf("mismatch at %v, expected %v got "+
+					"%v", i, checkpoint, checkpoints[i])
 				return i, nil
 			}
 		}
-		ckptHeight := uint32((i+1)*wire.CFCheckptInterval - 1)
+
+		ckptHeight := uint32((i + 1) * wire.CFCheckptInterval)
+
 		if ckptHeight <= storeTip {
 			header, err := headerStore.FetchHeaderByHeight(
 				ckptHeight,
@@ -1270,6 +1441,8 @@ func checkCFCheckptSanity(cp map[string][]*chainhash.Hash,
 			}
 
 			if *header != checkpoint {
+				log.Warnf("mismatch at height %v, expected %v got "+
+					"%v", ckptHeight, header, checkpoint)
 				return i, nil
 			}
 		}
@@ -1304,9 +1477,6 @@ out:
 			case *donePeerMsg:
 				b.handleDonePeerMsg(candidatePeers, msg.peer)
 
-			case isCurrentMsg:
-				msg.reply <- b.current()
-
 			default:
 				log.Warnf("Invalid message type in block "+
 					"handler: %T", msg)
@@ -1325,6 +1495,7 @@ out:
 func (b *blockManager) SyncPeer() *ServerPeer {
 	b.syncPeerMutex.Lock()
 	defer b.syncPeerMutex.Unlock()
+
 	return b.syncPeer
 }
 
@@ -1450,11 +1621,6 @@ func (b *blockManager) startSync(peers *list.List) {
 
 	// Start syncing from the best peer if one was selected.
 	if bestPeer != nil {
-		// Clear the requestedBlocks if the sync peer changes,
-		// otherwise we may ignore blocks we need that the last sync
-		// peer failed to send.
-		b.requestedBlocks = make(map[chainhash.Hash]struct{})
-
 		locator, err := b.server.BlockHeaders.LatestBlockLocator()
 		if err != nil {
 			log.Errorf("Failed to get block locator for the "+
@@ -1487,7 +1653,7 @@ func (b *blockManager) startSync(peers *list.List) {
 		b.syncPeerMutex.Unlock()
 		if b.nextCheckpoint != nil && best.Height < b.nextCheckpoint.Height {
 
-			b.syncPeer.PushGetHeadersMsg(locator, b.nextCheckpoint.Hash)
+			b.SyncPeer().PushGetHeadersMsg(locator, b.nextCheckpoint.Hash)
 			log.Infof("Downloading headers for blocks %d to "+
 				"%d from peer %s", best.Height+1,
 				b.nextCheckpoint.Height, bestPeer.Addr())
@@ -1496,16 +1662,19 @@ func (b *blockManager) startSync(peers *list.List) {
 			// request more headers than the peer is willing to
 			// give us in one message.
 		} else {
-			b.syncPeer.PushGetBlocksMsg(locator, &zeroHash)
+			b.SyncPeer().PushGetBlocksMsg(locator, &zeroHash)
 		}
 	} else {
 		log.Warnf("No sync peer candidates available")
 	}
 }
 
-// current returns true if we believe we are synced with our peers, false if we
-// still have blocks to check
-func (b *blockManager) current() bool {
+// IsCurrent returns whether or not the block manager believes it is synced
+// with the connected peers.
+func (b *blockManager) IsCurrent() bool {
+	b.syncPeerMutex.RLock()
+	defer b.syncPeerMutex.RUnlock()
+
 	// Figure out the latest block we know.
 	header, height, err := b.server.BlockHeaders.ChainTip()
 	if err != nil {
@@ -1545,17 +1714,40 @@ func (b *blockManager) current() bool {
 	// height on connect than we know the peer already has, we're probably
 	// not current. If the peer is lying to us, other code will disconnect
 	// it and then we'll re-check and notice that we're actually current.
-	return b.SyncPeer().LastBlock() >= b.SyncPeer().StartingHeight()
+	return b.syncPeer.LastBlock() >= b.syncPeer.StartingHeight()
 }
 
-// IsCurrent returns whether or not the block manager believes it is synced with
-// the connected peers.
+// FilterHeaderTip returns the current height of the filter header chain tip.
 //
-// TODO(roasbeef): hook into WC implementation
-func (b *blockManager) IsCurrent() bool {
-	reply := make(chan bool)
-	b.peerChan <- isCurrentMsg{reply: reply}
-	return <-reply
+// NOTE: This method is safe for concurrent access.
+func (b *blockManager) FilterHeaderTip() uint32 {
+	b.newFilterHeadersMtx.RLock()
+	defer b.newFilterHeadersMtx.RUnlock()
+
+	return b.filterHeaderTip
+}
+
+// SynchronizeFilterHeaders allows the caller to execute a function closure
+// that depends on synchronization with the current set of filter headers. This
+// allows the caller to execute an action that depends on the current filter
+// header state, thereby ensuring that the state would shift from underneath
+// them. Each execution of the closure will have the current filter header tip
+// passed in to ensue that the caller gets a consistent view.
+func (b *blockManager) SynchronizeFilterHeaders(f func(uint32) error) error {
+	b.newFilterHeadersMtx.RLock()
+	defer b.newFilterHeadersMtx.RUnlock()
+
+	return f(b.filterHeaderTip)
+}
+
+// BlockHeaderTip returns the current height of the block header chain tip.
+//
+// NOTE: This method is safe for concurrent access.
+func (b *blockManager) BlockHeaderTip() uint32 {
+	b.newHeadersMtx.RLock()
+	defer b.newHeadersMtx.RUnlock()
+
+	return b.headerTip
 }
 
 // QueueInv adds the passed inv message and peer to the block handling queue.
@@ -1566,7 +1758,11 @@ func (b *blockManager) QueueInv(inv *wire.MsgInv, sp *ServerPeer) {
 		return
 	}
 
-	b.peerChan <- &invMsg{inv: inv, peer: sp}
+	select {
+	case b.peerChan <- &invMsg{inv: inv, peer: sp}:
+	case <-b.quit:
+		return
+	}
 }
 
 // handleInvMsg handles inv messages from all peers.
@@ -1588,19 +1784,19 @@ func (b *blockManager) handleInvMsg(imsg *invMsg) {
 	// announced block for this peer. We'll use this information later to
 	// update the heights of peers based on blocks we've accepted that they
 	// previously announced.
-	if lastBlock != -1 && (imsg.peer != b.syncPeer || b.current()) {
+	if lastBlock != -1 && (imsg.peer != b.SyncPeer() || b.IsCurrent()) {
 		imsg.peer.UpdateLastAnnouncedBlock(&invVects[lastBlock].Hash)
 	}
 
 	// Ignore invs from peers that aren't the sync if we are not current.
 	// Helps prevent dealing with orphans.
-	if imsg.peer != b.syncPeer && !b.current() {
+	if imsg.peer != b.SyncPeer() && !b.IsCurrent() {
 		return
 	}
 
 	// If our chain is current and a peer announces a block we already
 	// know of, then update their current block height.
-	if lastBlock != -1 && b.current() {
+	if lastBlock != -1 && b.IsCurrent() {
 		height, err := b.server.BlockHeaders.HeightFromHash(&invVects[lastBlock].Hash)
 		if err == nil {
 			imsg.peer.UpdateLastBlockHeight(int32(height))
@@ -1616,7 +1812,7 @@ func (b *blockManager) handleInvMsg(imsg *invMsg) {
 
 	// If this is the sync peer or we're current, get the headers for the
 	// announced blocks and update the last announced block.
-	if lastBlock != -1 && (imsg.peer == b.syncPeer || b.current()) {
+	if lastBlock != -1 && (imsg.peer == b.SyncPeer() || b.IsCurrent()) {
 		lastEl := b.headerList.Back()
 		var lastHash chainhash.Hash
 		if lastEl != nil {
@@ -1662,7 +1858,11 @@ func (b *blockManager) QueueHeaders(headers *wire.MsgHeaders, sp *ServerPeer) {
 		return
 	}
 
-	b.peerChan <- &headersMsg{headers: headers, peer: sp}
+	select {
+	case b.peerChan <- &headersMsg{headers: headers, peer: sp}:
+	case <-b.quit:
+		return
+	}
 }
 
 // handleHeadersMsg handles headers messages from all peers.
@@ -1687,8 +1887,10 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 	// Process all of the received headers ensuring each one connects to
 	// the previous and that checkpoints match.
 	receivedCheckpoint := false
-	var finalHash *chainhash.Hash
-	var finalHeight int32
+	var (
+		finalHash   *chainhash.Hash
+		finalHeight int32
+	)
 	for i, blockHeader := range msg.Headers {
 		blockHash := blockHeader.BlockHash()
 		finalHash = &blockHash
@@ -1730,7 +1932,10 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 			})
 
 			hmsg.peer.UpdateLastBlockHeight(node.height)
-			b.progressLogger.LogBlockHeight(blockHeader, node.height)
+
+			b.blkHeaderProgressLogger.LogBlockHeight(
+				blockHeader.Timestamp, node.height,
+			)
 
 			// Finally initialize the header ->
 			// map[filterHash]*peer map for filter header
@@ -1752,7 +1957,7 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 			// reorg, in which case we'll either change our sync
 			// peer or disconnect the peer that sent us these bad
 			// headers.
-			if hmsg.peer != b.syncPeer && !b.current() {
+			if hmsg.peer != b.SyncPeer() && !b.IsCurrent() {
 				return
 			}
 
@@ -1956,6 +2161,7 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 
 	log.Tracef("Writing header batch of %v block headers",
 		len(headerWriteBatch))
+
 	if len(headerWriteBatch) > 0 {
 		// With all the headers in this batch validated, we'll write
 		// them all in a single transaction such that this entire batch
@@ -1974,7 +2180,7 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 
 	// If not current, request the next batch of headers starting from the
 	// latest known header and ending with the next checkpoint.
-	if !b.current() || b.server.chainParams.Net == chaincfg.SimNetParams.Net {
+	if !b.IsCurrent() || b.server.chainParams.Net == chaincfg.SimNetParams.Net {
 		locator := blockchain.BlockLocator([]*chainhash.Hash{finalHash})
 		nextHash := zeroHash
 		if b.nextCheckpoint != nil {
@@ -1988,19 +2194,13 @@ func (b *blockManager) handleHeadersMsg(hmsg *headersMsg) {
 		}
 	}
 
-	// If we've caught up to the headers, we can let the cfheader sync
-	// know to catch up to the block header store.
-	if b.current() {
-		select {
-		case b.startCFHeaderSync <- struct{}{}:
-			log.Infof("Sent startcfheadersync at height %d",
-				finalHeight)
-		case <-b.quit:
-		// If the cfheader sync is too busy to notice our notification,
-		// we move along. It'll catch up next time.
-		default:
-		}
-	}
+	// Since we have a new set of headers written to disk, we'll send out a
+	// new signal to notify any waiting sub-systems that they can now maybe
+	// proceed do to us extending the header chain.
+	b.newHeadersMtx.Lock()
+	b.headerTip = uint32(finalHeight)
+	b.newHeadersMtx.Unlock()
+	b.newHeadersSignal.Broadcast()
 }
 
 // checkHeaderSanity checks the PoW, and timestamp of a block header.
