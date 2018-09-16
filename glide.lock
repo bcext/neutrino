@@ -77,11 +77,11 @@ imports:
   subpackages:
   - ripemd160
 - name: golang.org/x/net
-  version: faa378e6dbaed88bd8100f8bcf09939375c6e8fa
+  version: 8a410e7b638dca158bf9e766925842f6651ff828
   subpackages:
   - context
 - name: golang.org/x/sys
-  version: 11551d06cbcc94edc80a0facaccbda56473c19c1
+  version: 2b024373dcd9800f0cae693839fac6ede8d64a8c
   subpackages:
   - unix
 - name: google.golang.org/grpc
