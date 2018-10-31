@@ -780,7 +780,7 @@ func testRescanResults(harness *neutrinoHarness, t *testing.T) {
 // TODO: Make this a benchmark instead.
 func testRandomBlocks(harness *neutrinoHarness, t *testing.T) {
 	var haveBest *waddrmgr.BlockStamp
-	haveBest, err := harness.svc.BestSnapshot()
+	haveBest, err := harness.svc.BestBlock()
 	if err != nil {
 		t.Fatalf("Couldn't get best snapshot from ChainService: %s", err)
 	}
@@ -1008,7 +1008,7 @@ func TestNeutrinoSync(t *testing.T) {
 		t.Fatalf("Couldn't generate blocks: %s", err)
 	}
 
-	// Create a second btcd SimNet node
+	// Create a second gcash SimNet node
 	h2, err := rpctest.New(
 		&chaincfg.SimNetParams, nil, []string{"--txindex"},
 	)
@@ -1169,7 +1169,7 @@ func waitForSync(t *testing.T, svc *neutrino.ChainService,
 		t.Logf("Syncing to %d (%s)", knownBestHeight, knownBestHash)
 	}
 	var haveBest *waddrmgr.BlockStamp
-	haveBest, err = svc.BestSnapshot()
+	haveBest, err = svc.BestBlock()
 	if err != nil {
 		return fmt.Errorf("Couldn't get best snapshot from "+
 			"ChainService: %s", err)
@@ -1186,7 +1186,7 @@ func waitForSync(t *testing.T, svc *neutrino.ChainService,
 		}
 		time.Sleep(syncUpdate)
 		total += syncUpdate
-		haveBest, err = svc.BestSnapshot()
+		haveBest, err = svc.BestBlock()
 		if err != nil {
 			return fmt.Errorf("Couldn't get best snapshot from "+
 				"ChainService: %s", err)

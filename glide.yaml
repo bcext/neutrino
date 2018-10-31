@@ -3,7 +3,7 @@ import:
 - package: github.com/coreos/bbolt
   version: 4f5275f4ebbf6fe7cb772de987fa96ee674460a7
 - package: github.com/bcext/gcash
-  version: 11ef133b910432771ccc67736e1bde9e377113b9
+  version: fa31fe9158823126c967f080d6584601e7a69ba3
   subpackages:
   - blockchain
   - btcec
@@ -14,14 +14,14 @@ import:
   - wire
 - package: github.com/btcsuite/btclog
 - package: github.com/bcext/cashutil
-  version: a5c8dc7dcbbac5d05b569fa4016441ab4d2314bd
+  version: 9ba6cf2922836010e02658df743533b995b0d947
   subpackages:
   - base58
   - gcs
   - gcs/builder
   - hdkeychain
 - package: github.com/bcext/cashwallet
-  version: a7cfc6a2dbcf8565e314d30527787dd92f9dcd8d
+  version: 94f8958019db1fecf0921b9a38c1ae1ac8b51052
   subpackages:
   - waddrmgr
   - wallet/txauthor

@@ -43,7 +43,7 @@ var (
 // loadBlocks loads the blocks contained in the testdata directory and returns
 // a slice of them.
 //
-// NOTE: copied from btcsuite/btcd/database/ffldb/interface_test.go
+// NOTE: copied from bcext/gcash/database/ffldb/interface_test.go
 func loadBlocks(t *testing.T, dataFile string, network wire.BitcoinNet) (
 	[]*cashutil.Block, error) {
 	// Open the file that contains the blocks for reading.
