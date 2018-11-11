@@ -1,5 +1,5 @@
-hash: 830e4e7f3dae79bc2219b0f88db7fc99f91c7c4be5df03b08fc3d6f0c3fe2e08
-updated: 2018-11-11T10:07:06.409958+08:00
+hash: 2deac295f407f5f8d0cf2d62666b023217c4e3fb5d4ce099d92d2f352e645cbc
+updated: 2018-11-11T10:17:29.747929+08:00
 imports:
 - name: github.com/aead/siphash
   version: 83563a290f60225eb120d724600b9690c3fb536f
@@ -11,7 +11,7 @@ imports:
   - gcs/builder
   - hdkeychain
 - name: github.com/bcext/cashwallet
-  version: 94f8958019db1fecf0921b9a38c1ae1ac8b51052
+  version: 9f461c2d277b55499de42a20875eb1cd7741a018
   subpackages:
   - internal/helpers
   - internal/zero

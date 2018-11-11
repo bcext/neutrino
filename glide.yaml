@@ -21,7 +21,7 @@ import:
   - gcs/builder
   - hdkeychain
 - package: github.com/bcext/cashwallet
-  version: 94f8958019db1fecf0921b9a38c1ae1ac8b51052
+  version: 9f461c2d277b55499de42a20875eb1cd7741a018
   subpackages:
   - waddrmgr
   - wallet/txauthor
